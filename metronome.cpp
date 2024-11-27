@@ -1,19 +1,9 @@
-#include <AudioSessionTypes.h>
-#include <Mmdeviceapi.h>
-#include <Windows.h>
 #include <Audioclient.h>
-#include <basetsd.h>
-#include <combaseapi.h>
-#include <cstdlib>
-#include <cstring>
-#include <minwindef.h>
 #include <mmdeviceapi.h>
-#include <mmeapi.h>
-#include <mmreg.h>
-#include <math.h>
 #include <conio.h>
-#include <comdef.h>
 #include <iostream>
+#include <stdexcept>
+#include <unordered_map>
 
 // REFERENCE_TIME units = 100ns
 #define REFTIMES_PER_SEC  10000000
@@ -31,42 +21,70 @@ const IID IID_IMMDeviceEnumerator = __uuidof(IMMDeviceEnumerator);
 const IID IID_IAudioClient = __uuidof(IAudioClient);
 const IID IID_IAudioRenderClient = __uuidof(IAudioRenderClient);
 
+class GetOpts {
+		unordered_map<string, char *> argMap;
+		int argc;
+		char *argv[];
+	public:
+		GetOpts() {}
+		GetOpts(int argcount, char *args[]) {
+			processArgv(argcount, args);
+		}
+		void processArgv(int argcount, char *args[]) {
+			unordered_map<string, char*> argopts;
+			if(argcount > 1 && (argcount - 1) % 2 != 0) {
+				throw runtime_error("All arguments must be in the form of '-option value' pairing.");
+			}
+			for(short i = 1; i < argcount; i += 2) {
+				argopts.insert({string(args[i]), args[i+1]});
+			}
+			argMap = argopts;
+		}
+		const char* getOpt(string key) {
+			auto findKey = argMap.find(key.data());
+			if(findKey == argMap.end()) {
+				return NULL;
+			}
+			return findKey->second;
+		}
+		bool optsContains(string key) {
+			if(argMap.find(key.data()) == argMap.end()) {
+				return false;
+			}
+			return true;
+		}
+};
+
+
 float pianoKey(float n) {
 	// find nth piano frequency tuned to A = 440hz
 	float key = pow(2.0, ((n-49.0)/12.0));
 	return key * 440.0;
 }
 
-void buildSineTone(WAVEFORMATEX wave_format, UINT32 bufferFrameCount, BYTE *audioBytes, float freq) {
+void buildSineTone(WAVEFORMATEX wave_format, UINT32 bufferFrameCount, BYTE *audioBytes, float freq, float vol) {
 	// memcpy seemed to not work, must cast output buffer to float
 	float *outData = (float*) audioBytes;
 
 	// (The size of an audio frame = nChannels * wBitsPerSample) DOES NOT MATTER
 	// INT32 FrameSize_bytes = bufferFrameCount * (wave_format.nChannels * wave_format.wBitsPerSample / 8);
 	const size_t num_samples = bufferFrameCount * wave_format.nChannels;
-
 	float dt = 1.0 / (float)wave_format.nSamplesPerSec;
 
-	float ptime = 0.0;
-	unsigned short vol = 2000;
-	const float radsPerSec = 2 * 3.1415926536 * freq / (float) wave_format.nSamplesPerSec;
-
+	float t, amplitude;
 	// SAMPLES MUST BE BETWEEN -1.0 AND 1.0
 	for (int i = 0; i < num_samples; i+=wave_format.nChannels) {
-		float t = (float)i * dt;
-		float amplitude = sin(t*TWO_PI*freq);
+		t = (float)i * dt;
+		amplitude = sin(t*TWO_PI*freq) * vol;
 
 		// write values to all channels
 		for (int j = 0; j < wave_format.nChannels; j++) {
 			outData[i + j] = amplitude;
 		}
 	}
-	// cout << freq << ", " << num_samples << ", " << wave_format.wBitsPerSample << endl;
-	// cout << wave_format.nBlockAlign << ", " << wave_format.nSamplesPerSec << ", " << bufferFrameCount << endl;
-
 }
 
-void playMetronome(float bpm, float pianoNote, short timeSig, IMMDevice *device) {
+void playMetronome(float bpm, float pianoNote, short timeSig, float volume, IMMDevice *device) {
 	// Setup with reference to: https://learn.microsoft.com/en-us/windows/win32/coreaudio/rendering-a-stream
 	IAudioClient *audClient = NULL;
 	IAudioRenderClient *audRenderClient = NULL;
@@ -107,7 +125,7 @@ void playMetronome(float bpm, float pianoNote, short timeSig, IMMDevice *device)
 		audRenderClient->GetBuffer(numFramesAvail, &bufAudData);
 		if(beatCounter % timeSig == 0) {
 			beatCounter = 0;
-			buildSineTone(*mixFormat, numFramesAvail, bufAudData, downBeat);
+			buildSineTone(*mixFormat, numFramesAvail, bufAudData, downBeat, volume);
 			audRenderClient->ReleaseBuffer(numFramesAvail, 0);
 
 			// ANSI escape sequence '\x1b[' = ESC, '#K' = clear line without changing cursor position
@@ -115,7 +133,7 @@ void playMetronome(float bpm, float pianoNote, short timeSig, IMMDevice *device)
 			cout << "\x1b[2K\r";
 			continue;
 		}
-		buildSineTone(*mixFormat, numFramesAvail, bufAudData, freq);
+		buildSineTone(*mixFormat, numFramesAvail, bufAudData, freq, volume);
 		audRenderClient->ReleaseBuffer(numFramesAvail, 0);
 	}
 
@@ -127,8 +145,19 @@ void playMetronome(float bpm, float pianoNote, short timeSig, IMMDevice *device)
 	RELEASE_RESOURCE(audRenderClient);
 }
 
-// assumed argv order: bpm, timeSignature, note
+// Expected optional args:
+// -b = bpm
+// -t = time signature (assumed to be over 4)
+// -n = note (1 - 88)
+// -vo = volume (should be between 0.0 - 1.0)
 int main(int argc, char *argv[]) {
+	GetOpts argopts;
+	try {
+		argopts = GetOpts(argc, argv);
+	} catch (runtime_error e) {
+		cerr << e.what() << endl;
+		exit(EXIT_FAILURE);
+	}
 	CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
 	HRESULT hr = NULL;
@@ -146,15 +175,16 @@ int main(int argc, char *argv[]) {
 	IMMDevice *dev = NULL;
 	pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &dev);
 
-	short bpm = (argc > 1) ? atoi(argv[1]) : 120;
-	short timeSignature = (argc > 2) ? atoi(argv[2]) : 4; // always over 4, for now
-	float note = (argc > 3) ? atoi(argv[3]) : 49.0;
+	short bpm = argopts.optsContains("-b") ? atoi(argopts.getOpt("-b")) : 120;
+	short timeSignature = argopts.optsContains("-t") ? atoi(argopts.getOpt("-t")) : 4; // always over 4, for now
+	float note = argopts.optsContains("-n") ? atof(argopts.getOpt("-n")) : 49.0;
+	float volume = argopts.optsContains("-vo") ? atof(argopts.getOpt("-vo")) : 0.75;
+	cout << "BPM: " << bpm << ", Time Signature: " << timeSignature << "/4, Piano Note: " << note << ", Volume: " << (int)(volume * 100) << "%" << endl;
+	playMetronome(bpm, note, timeSignature, volume, dev);
 
-	cout << "BPM: " << bpm << ", Time Signature: " << timeSignature << "/4, Piano Note: " << note << endl;
-	playMetronome(bpm, note, timeSignature, dev);
 
 	CoUninitialize();
 	RELEASE_RESOURCE(pEnumerator);
 	RELEASE_RESOURCE(dev);
-	return 0;
+	return EXIT_SUCCESS;
 }

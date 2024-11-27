@@ -18,8 +18,17 @@ If no problems occur then ideally:
         - BPM = 120
         - Time Signature = 4/4 (Time signature will always be over 4 as of now)
         - Freq of tone = 49th piano key (Tuned for 440hz)
+        - Volume = 0.75
 
 Optional Arguments (Order must be as listed):
 1. BPM: The bpm for metronome.
 2. Time Signature: Time signature on which to play alternative frequency, this value will automatically be over 4 (e.g. If '3' is entered, the signature will be 3/4)
 3. Piano Note: Ultimately the frequency, denoted by which number key on the piano (The downbeat of the time signature will have frequency of `note + 8`)
+4. Volume: expressed as decimal representing percentage (0.0 - 1.0)
+
+Arguments must be supplied in the form of:
+```shell
+metronome.exe -option value -option2 value2 ...
+```
+
+In order to stop execution, press ESC or any other key.
